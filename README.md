@@ -11,7 +11,7 @@ Each matrix job gets `WPE_ENV` from its environment's secret and runs `script.sh
 1. Writes the SSH private key from `WPE_SSHG_KEY_PRIVATE` to `~/.ssh/id_rsa` and adds the WP Engine host to `known_hosts`.
 2. SSHes to `${WPE_ENV}@${WPE_ENV}.ssh.wpengine.net` and `cd`s into `~/sites/${WPE_ENV}/`.
 3. Logs the WP version and, for every site in the network (excluding archived, spam and deleted), lists the cron events and runs the due ones with `wp cron event run --due-now`. PHP warnings, notices and deprecations are suppressed via `--exec`.
-4. Trims the logs so they stay bounded.
+4. Trims oversized logs and archives them weekly (see below).
 
 Jobs run in parallel with `fail-fast: false`, so one environment failing doesn't stop the other. Concurrency is grouped per environment (`wp-cron-<env>`), so a slow run won't overlap with the next one for the same install.
 
@@ -19,8 +19,12 @@ Jobs run in parallel with `fail-fast: false`, so one environment failing doesn't
 
 Logs are written on the server in `~/sites/<env>/_wpeprivate/`:
 
-- `cron-run.log`: run headers (timestamp, link to the GitHub run), WP version, cron event lists and run output. Trimmed to the last 5000 lines.
-- `cron-run-error.log`: stderr, plus a `FAILED: <url>` line for any site where `wp cron event run` exited non-zero. Trimmed to the last 2 MB.
+- `cron-run.log`: run headers (timestamp, link to the GitHub run), cron run output. Capped at 10 MB.
+- `cron-run-error.log`: stderr, plus a `FAILED: <url>` line for any site where `wp cron event run` exited non-zero. Capped at 2 MB.
+
+### Weekly archive
+
+When the ISO week changes, the first run of the new week gzips each log into `_wpeprivate/logs/` as `cron-run-<YYYY>-W<WW>.log.gz` and `cron-run-error-<YYYY>-W<WW>.log.gz`, then starts fresh live logs. Empty logs aren't archived. Archives older than 8 weeks (56 days) are deleted on each run. The current week is tracked in `_wpeprivate/logs/.current-week`. If a live log goes over its cap, the oldest lines are dropped (always whole lines) before it's archived, so a very busy week can lose its earliest entries.
 
 ## Setup
 
