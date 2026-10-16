@@ -4,11 +4,15 @@ echo "$WPE_SSHG_KEY_PRIVATE" > ~/.ssh/id_rsa
 chmod 600 ~/.ssh/id_rsa
 ssh-keyscan -H ${WPE_ENV}.ssh.wpengine.net >> ~/.ssh/known_hosts
 
-ssh -i ~/.ssh/id_rsa ${WPE_ENV}@${WPE_ENV}.ssh.wpengine.net <<EOF
+RETRY_NOTES=""
+
+run_remote() {
+ssh -i ~/.ssh/id_rsa -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 ${WPE_ENV}@${WPE_ENV}.ssh.wpengine.net <<EOF
 cd ~/sites/${WPE_ENV}/
 mkdir -p _wpeprivate
 LOG=_wpeprivate/cron-run.log
 ERR=_wpeprivate/cron-run-error.log
+FAILLOG=_wpeprivate/failures-and-retries.log
 LOGDIR=_wpeprivate/logs
 mkdir -p \$LOGDIR
 
@@ -18,7 +22,7 @@ WEEK=\$(date +%G-W%V)
 MARK=\$LOGDIR/.current-week
 PREV=\$(cat \$MARK 2>/dev/null)
 if [ -n "\$PREV" ] && [ "\$PREV" != "\$WEEK" ]; then
-  for f in \$LOG \$ERR; do
+  for f in \$LOG \$ERR \$FAILLOG; do
     if [ -s \$f ]; then
       gzip -c \$f > \$LOGDIR/\$(basename \$f .log)-\$PREV.log.gz && : > \$f
     fi
@@ -27,6 +31,8 @@ fi
 echo \$WEEK > \$MARK
 find \$LOGDIR -name '*.log.gz' -mtime +56 -delete
 
+# SSH failures/retries from earlier attempts of this run (recorded locally, written now that we're connected)
+$RETRY_NOTES
 echo "---\$(date) ---" >> \$LOG
 echo "GitHub Run: https://github.com/$GHA_REPO/actions/runs/$GHA_RUN_ID" >> \$LOG
 
@@ -48,5 +54,23 @@ trim() {
   fi
 }
 trim \$LOG 10485760
-trim \$ERR 2097152
+trim \$ERR 10485760
+trim \$FAILLOG 10485760
 EOF
+}
+
+# ssh exits 255 on connection-level failures (dropped/refused/reset); retry those only.
+# Re-running is safe: --due-now only runs events that are actually due.
+for attempt in 1 2 3; do
+  run_remote && exit 0
+  rc=$?
+  [ $rc -ne 255 ] && exit $rc
+  echo "SSH connection failed (attempt $attempt/3, exit $rc), retrying in 20s..." >&2
+  RETRY_NOTES="$RETRY_NOTES
+echo '---$(date) ---' >> \$FAILLOG
+echo 'GitHub Run: https://github.com/$GHA_REPO/actions/runs/$GHA_RUN_ID' >> \$FAILLOG
+echo 'SSH connection failed (attempt $attempt/3, exit $rc), retried' >> \$FAILLOG"
+  sleep 20
+done
+echo "SSH failed after 3 attempts; no connection to write failures-and-retries.log" >&2
+exit 255
